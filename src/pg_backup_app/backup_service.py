@@ -153,7 +153,7 @@ class BackupService:
                         )
 
                 self._notify(progress, "Resetting sequences...")
-                self._sync_sequence_values(conn, tables)
+                self._sync_sequence_values(conn, tables, progress)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -480,7 +480,13 @@ class BackupService:
         stripped = sql_text.rstrip()
         return stripped if stripped.endswith(";") else stripped + ";"
 
-    def _sync_sequence_values(self, conn: PgConnection, manifest_tables: Sequence[dict]) -> None:
+    def _sync_sequence_values(
+        self,
+        conn: PgConnection,
+        manifest_tables: Sequence[dict],
+        progress: ProgressCallback | None = None,
+    ) -> None:
+        reset_count = 0
         with conn.cursor() as cur:
             for table_info in manifest_tables:
                 schema = str(table_info["schema"])
@@ -491,14 +497,19 @@ class BackupService:
                     FROM information_schema.columns
                     WHERE table_schema = %s
                       AND table_name = %s
-                      AND column_default LIKE 'nextval(%'
+                      AND column_default LIKE %s
                     """,
-                    (schema, table),
+                    (schema, table, "nextval(%"),
                 )
                 for column, column_default in cur.fetchall():
                     sequence_name = self._sequence_name_from_default(str(column_default))
                     if not sequence_name:
                         continue
+
+                    self._notify(
+                        progress,
+                        f"[BackupService] sync_sequence_values — table={schema}.{table}, column={column}, sequence={sequence_name}",
+                    )
 
                     max_query = sql.SQL("SELECT MAX({}) FROM {}").format(
                         sql.Identifier(column),
@@ -513,6 +524,8 @@ class BackupService:
                             "SELECT setval(CAST(%s AS regclass), %s, true)",
                             (sequence_name, int(max_value)),
                         )
+                    reset_count += 1
+        self._notify(progress, f"[BackupService] sync_sequence_values — success count={reset_count}")
 
     def _truncate_restore_tables(self, conn: PgConnection, manifest_tables: Sequence[dict]) -> None:
         table_names = []

@@ -26,6 +26,8 @@ The backup failed in `BackupService._export_table_inserts()` at the `cur.mogrify
 - Added missing sequence creation for `nextval(...::regclass)` defaults before table creation.
 - Added post-restore sequence reset so restored serial-style IDs continue after the imported maximum value.
 - Restore now truncates backup tables with `RESTART IDENTITY CASCADE` before CSV import, so restoring into a previously used database replaces existing table data instead of duplicating primary keys.
+- Fixed sequence reset query placeholder parsing by parameterizing the `nextval(%` pattern instead of keeping `%` inside the SQL string.
+- Added focused restore status messages for each sequence reset in the format `[BackupService] sync_sequence_values — table=..., column=..., sequence=...`.
 - Kept CSV export and restore behavior unchanged.
 
 ### Restore DDL Syntax Error
@@ -47,6 +49,16 @@ relation "_schema_migrations_id_seq" does not exist
 ```
 
 The generated table SQL referenced `nextval('_schema_migrations_id_seq'::regclass)` but did not create the sequence first. Restore now injects missing `CREATE SEQUENCE IF NOT EXISTS ...` statements before creating tables, and resets sequence values after CSV data is loaded.
+
+### Sequence Reset Tuple Error
+
+Restore failed at:
+
+```text
+tuple index out of range
+```
+
+The sequence-reset query contained `LIKE 'nextval(%'`. In psycopg2 query strings, `%` is part of placeholder parsing, so the literal `%` caused parameter parsing to fail. The pattern is now passed as a query parameter, and the restore status panel shows which sequence is being reset.
 
 ## Verification
 
