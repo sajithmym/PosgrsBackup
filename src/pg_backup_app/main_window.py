@@ -383,7 +383,7 @@ class MainWindow(QMainWindow):
         confirm = QMessageBox.question(
             self,
             "Confirm Restore",
-            "Restore will insert backup data into the selected database. Continue?",
+            "Restore will replace data in the backed-up tables of the selected database. Continue?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

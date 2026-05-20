@@ -15,6 +15,7 @@ The app now has a more complete desktop workflow: persistent theme selection, re
 - Rebuilt the UI with card panels instead of group boxes, so the connection form and buttons remain visible.
 - Increased window size and status console height.
 - Moved status actions into the Status card header so the log console is not hidden behind bottom buttons.
+- Reduced the default and minimum window height so the bottom of the log panel remains visible on smaller desktop work areas.
 - Added `Test Connection`, `Open Last Backup`, and `Copy Status` buttons.
 - Kept backup and restore service behavior unchanged.
 

@@ -23,6 +23,9 @@ The backup failed in `BackupService._export_table_inserts()` at the `cur.mogrify
 - Added missing semicolons to generated `CREATE INDEX` statements.
 - Skipped PostgreSQL `NOT NULL` pseudo-constraint blocks during DDL generation because `NOT NULL` is already carried on the column definition.
 - Added restore-time DDL cleanup so older backups generated before this fix can still be restored.
+- Added missing sequence creation for `nextval(...::regclass)` defaults before table creation.
+- Added post-restore sequence reset so restored serial-style IDs continue after the imported maximum value.
+- Restore now truncates backup tables with `RESTART IDENTITY CASCADE` before CSV import, so restoring into a previously used database replaces existing table data instead of duplicating primary keys.
 - Kept CSV export and restore behavior unchanged.
 
 ### Restore DDL Syntax Error
@@ -34,6 +37,16 @@ syntax error at or near "CREATE"
 ```
 
 The generated `create_tables.sql` had consecutive `CREATE INDEX` statements without `;` terminators. Older generated files could also include invalid standalone `ALTER TABLE ... ADD CONSTRAINT ... NOT NULL column` blocks. Restore now normalizes those older DDL files before executing them.
+
+### Missing Sequence Error
+
+Restore failed at:
+
+```text
+relation "_schema_migrations_id_seq" does not exist
+```
+
+The generated table SQL referenced `nextval('_schema_migrations_id_seq'::regclass)` but did not create the sequence first. Restore now injects missing `CREATE SEQUENCE IF NOT EXISTS ...` statements before creating tables, and resets sequence values after CSV data is loaded.
 
 ## Verification
 

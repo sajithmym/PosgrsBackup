@@ -132,6 +132,9 @@ class BackupService:
                     self._notify(progress, "Creating schemas and tables...")
                     cur.execute(self._read_restore_ddl(ddl_path))
 
+                self._notify(progress, "Preparing tables for restore...")
+                self._truncate_restore_tables(conn, tables)
+
                 for index, table_info in enumerate(tables, start=1):
                     schema = str(table_info["schema"])
                     table = str(table_info["table"])
@@ -149,6 +152,8 @@ class BackupService:
                             f"[{index}/{len(tables)}] Skipped {schema}.{table}; no restorable columns.",
                         )
 
+                self._notify(progress, "Resetting sequences...")
+                self._sync_sequence_values(conn, tables)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -250,7 +255,7 @@ class BackupService:
             lines.append("")
         lines.extend(index_lines)
         lines.append("")
-        return "\n".join(lines)
+        return self._inject_missing_sequence_creates("\n".join(lines))
 
     def _build_single_table_sql(
         self, conn: PgConnection, table: TableRef
@@ -367,7 +372,90 @@ class BackupService:
         ddl_sql = ddl_path.read_text(encoding="utf-8")
         ddl_sql = self._remove_invalid_not_null_constraint_blocks(ddl_sql)
         ddl_sql = self._terminate_create_index_lines(ddl_sql)
+        ddl_sql = self._inject_missing_sequence_creates(ddl_sql)
         return ddl_sql
+
+    def _inject_missing_sequence_creates(self, ddl_sql: str) -> str:
+        sequence_names = self._extract_nextval_sequence_names(ddl_sql)
+        if not sequence_names:
+            return ddl_sql
+
+        existing_sequences = {
+            self._normalize_regclass_name(match)
+            for match in re.findall(
+                r"CREATE\s+SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^;\n]+)",
+                ddl_sql,
+                flags=re.I,
+            )
+        }
+        missing_sequences = [
+            name for name in sequence_names if self._normalize_regclass_name(name) not in existing_sequences
+        ]
+        if not missing_sequences:
+            return ddl_sql
+
+        sequence_lines = [
+            f"CREATE SEQUENCE IF NOT EXISTS {self._qualified_sequence_name(name)};"
+            for name in missing_sequences
+        ]
+        lines = ddl_sql.splitlines()
+        insert_at = 0
+        for index, line in enumerate(lines):
+            if re.match(r"^\s*CREATE\s+SCHEMA\s+", line, flags=re.I):
+                insert_at = index + 1
+
+        return "\n".join(lines[:insert_at] + [""] + sequence_lines + [""] + lines[insert_at:]) + "\n"
+
+    def _extract_nextval_sequence_names(self, ddl_sql: str) -> list[str]:
+        seen = set()
+        names = []
+        for raw_name in re.findall(r"nextval\('((?:[^']|'')+)'::regclass\)", ddl_sql, flags=re.I):
+            name = raw_name.replace("''", "'")
+            key = self._normalize_regclass_name(name)
+            if key not in seen:
+                seen.add(key)
+                names.append(name)
+        return names
+
+    def _qualified_sequence_name(self, regclass_name: str) -> str:
+        parts = self._split_regclass_name(regclass_name)
+        if len(parts) == 1:
+            return qualified_name("public", parts[0])
+        return qualified_name(parts[-2], parts[-1])
+
+    def _normalize_regclass_name(self, regclass_name: str) -> str:
+        parts = self._split_regclass_name(regclass_name.strip())
+        if len(parts) == 1:
+            return "public." + parts[0].lower()
+        return ".".join(part.lower() for part in parts[-2:])
+
+    def _split_regclass_name(self, regclass_name: str) -> list[str]:
+        cleaned = regclass_name.strip().strip(";")
+        if "::" in cleaned:
+            cleaned = cleaned.split("::", 1)[0]
+        if cleaned.startswith("'") and cleaned.endswith("'"):
+            cleaned = cleaned[1:-1]
+
+        parts = []
+        current = []
+        in_quotes = False
+        index = 0
+        while index < len(cleaned):
+            char = cleaned[index]
+            if char == '"':
+                if in_quotes and index + 1 < len(cleaned) and cleaned[index + 1] == '"':
+                    current.append('"')
+                    index += 1
+                else:
+                    in_quotes = not in_quotes
+            elif char == "." and not in_quotes:
+                parts.append("".join(current))
+                current = []
+            else:
+                current.append(char)
+            index += 1
+        parts.append("".join(current))
+        return [part for part in parts if part]
 
     def _remove_invalid_not_null_constraint_blocks(self, ddl_sql: str) -> str:
         return re.sub(
@@ -391,6 +479,64 @@ class BackupService:
     def _ensure_sql_statement_terminator(self, sql_text: str) -> str:
         stripped = sql_text.rstrip()
         return stripped if stripped.endswith(";") else stripped + ";"
+
+    def _sync_sequence_values(self, conn: PgConnection, manifest_tables: Sequence[dict]) -> None:
+        with conn.cursor() as cur:
+            for table_info in manifest_tables:
+                schema = str(table_info["schema"])
+                table = str(table_info["table"])
+                cur.execute(
+                    """
+                    SELECT column_name, column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = %s
+                      AND table_name = %s
+                      AND column_default LIKE 'nextval(%'
+                    """,
+                    (schema, table),
+                )
+                for column, column_default in cur.fetchall():
+                    sequence_name = self._sequence_name_from_default(str(column_default))
+                    if not sequence_name:
+                        continue
+
+                    max_query = sql.SQL("SELECT MAX({}) FROM {}").format(
+                        sql.Identifier(column),
+                        sql.Identifier(schema, table),
+                    )
+                    cur.execute(max_query)
+                    max_value = cur.fetchone()[0]
+                    if max_value is None:
+                        cur.execute("SELECT setval(CAST(%s AS regclass), 1, false)", (sequence_name,))
+                    else:
+                        cur.execute(
+                            "SELECT setval(CAST(%s AS regclass), %s, true)",
+                            (sequence_name, int(max_value)),
+                        )
+
+    def _truncate_restore_tables(self, conn: PgConnection, manifest_tables: Sequence[dict]) -> None:
+        table_names = []
+        for table_info in manifest_tables:
+            schema = str(table_info["schema"])
+            table = str(table_info["table"])
+            table_names.append(sql.Identifier(schema, table))
+
+        if not table_names:
+            return
+
+        truncate_sql = sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(
+            sql.SQL(", ").join(table_names)
+        )
+        with conn.cursor() as cur:
+            cur.execute(truncate_sql)
+
+    def _sequence_name_from_default(self, column_default: str) -> str | None:
+        match = re.search(r"nextval\('((?:[^']|'')+)'::regclass\)", column_default, flags=re.I)
+        if not match:
+            return None
+
+        raw_name = match.group(1).replace("''", "'")
+        return self._qualified_sequence_name(raw_name)
 
     def _export_table_csv(
         self, conn: PgConnection, table: TableRef, columns: Sequence[str], destination: Path
