@@ -214,6 +214,7 @@ class BackupService:
 
         self._notify(progress, "Connecting to PostgreSQL...")
         try:
+            source_enum_labels = self._load_source_enum_labels(config, manifest.get("database"), tables)
             with connect_to_database(config) as conn:
                 conn.autocommit = False
                 logger.debug(
@@ -224,14 +225,23 @@ class BackupService:
                 try:
                     with conn.cursor() as cur:
                         self._notify(progress, "Preparing restore SQL...")
-                        restore_ddl = self._read_restore_ddl(ddl_path, backup_root, tables)
+                        restore_ddl = self._read_restore_ddl(
+                            ddl_path,
+                            backup_root,
+                            tables,
+                            source_enum_labels,
+                        )
+                        schema_ddl, foreign_key_ddl = self._split_foreign_key_constraint_blocks(
+                            restore_ddl
+                        )
                         logger.info(
-                            "[BackupService] restore_database %s executing_ddl bytes=%d",
+                            "[BackupService] restore_database %s executing_schema_ddl bytes=%d, foreign_key_bytes=%d",
                             LOG_SEP,
-                            len(restore_ddl.encode("utf-8")),
+                            len(schema_ddl.encode("utf-8")),
+                            len(foreign_key_ddl.encode("utf-8")),
                         )
                         self._notify(progress, "Creating schemas and tables...")
-                        cur.execute(restore_ddl)
+                        cur.execute(schema_ddl)
 
                     self._notify(progress, "Preparing tables for restore...")
                     self._truncate_restore_tables(conn, tables)
@@ -274,6 +284,16 @@ class BackupService:
                                 progress,
                                 f"[{index}/{len(tables)}] Skipped {schema}.{table}; no restorable columns.",
                             )
+
+                    if foreign_key_ddl.strip():
+                        self._notify(progress, "Creating foreign keys...")
+                        logger.info(
+                            "[BackupService] restore_database %s executing_foreign_keys bytes=%d",
+                            LOG_SEP,
+                            len(foreign_key_ddl.encode("utf-8")),
+                        )
+                        with conn.cursor() as cur:
+                            cur.execute(foreign_key_ddl)
 
                     self._notify(progress, "Resetting sequences...")
                     self._sync_sequence_values(conn, tables, progress)
@@ -445,15 +465,21 @@ class BackupService:
             lines.extend(enum_lines)
             lines.append("")
 
-        constraint_blocks: list[str] = []
+        primary_unique_check_constraints: list[str] = []
+        foreign_key_constraints: list[str] = []
         index_lines: list[str] = []
         for table in tables:
             table_sql, constraints, indexes = self._build_single_table_sql(conn, table)
             lines.extend(table_sql)
             lines.append("")
-            constraint_blocks.extend(constraints)
+            for constraint_type, constraint_block in constraints:
+                if constraint_type == "f":
+                    foreign_key_constraints.append(constraint_block)
+                else:
+                    primary_unique_check_constraints.append(constraint_block)
             index_lines.extend(indexes)
 
+        constraint_blocks = primary_unique_check_constraints + foreign_key_constraints
         lines.extend(constraint_blocks)
         if constraint_blocks:
             lines.append("")
@@ -469,7 +495,7 @@ class BackupService:
 
     def _build_single_table_sql(
         self, conn: PgConnection, table: TableRef
-    ) -> tuple[list[str], list[str], list[str]]:
+    ) -> tuple[list[str], list[tuple[str, str]], list[str]]:
         logger.debug(
             "[BackupService] _build_single_table_sql %s table=%s.%s",
             LOG_SEP,
@@ -551,7 +577,7 @@ class BackupService:
             ");",
         ]
         constraint_blocks = [
-            self._constraint_block(table, name, definition)
+            (constraint_type, self._constraint_block(table, name, definition))
             for name, definition, constraint_type in constraints
             if constraint_type != "n" and not str(definition).upper().startswith("NOT NULL ")
         ]
@@ -664,6 +690,101 @@ class BackupService:
             )
         return enum_blocks
 
+    def _load_source_enum_labels(
+        self,
+        target_config: DbConnectionConfig,
+        source_database: object,
+        manifest_tables: Sequence[dict],
+    ) -> dict[tuple[str, str], list[str]]:
+        source_database_name = str(source_database or "").strip()
+        if not source_database_name:
+            logger.debug("[BackupService] _load_source_enum_labels %s no_source_database", LOG_SEP)
+            return {}
+        if source_database_name == target_config.database.strip():
+            logger.debug(
+                "[BackupService] _load_source_enum_labels %s source_is_target database=%s",
+                LOG_SEP,
+                source_database_name,
+            )
+            return {}
+
+        source_config = DbConnectionConfig(
+            host=target_config.host,
+            port=target_config.port,
+            user=target_config.user,
+            password=target_config.password,
+            database=source_database_name,
+        )
+        try:
+            with connect_to_database(source_config) as source_conn:
+                labels = self._get_enum_labels_for_manifest_tables(source_conn, manifest_tables)
+        except Exception as exc:
+            logger.warning(
+                "[BackupService] _load_source_enum_labels %s unavailable source_database=%s, error=%s",
+                LOG_SEP,
+                source_database_name,
+                exc,
+            )
+            return {}
+
+        logger.info(
+            "[BackupService] _load_source_enum_labels %s success source_database=%s, enum_types=%d",
+            LOG_SEP,
+            source_database_name,
+            len(labels),
+        )
+        return labels
+
+    def _get_enum_labels_for_manifest_tables(
+        self,
+        conn: PgConnection,
+        manifest_tables: Sequence[dict],
+    ) -> dict[tuple[str, str], list[str]]:
+        table_pairs = sorted(
+            {
+                (str(table_info["schema"]), str(table_info["table"]))
+                for table_info in manifest_tables
+            }
+        )
+        if not table_pairs:
+            return {}
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH manifest_tables(schema_name, table_name) AS (
+                    SELECT * FROM unnest(%s::text[], %s::text[])
+                )
+                SELECT enum_ns.nspname, enum_type.typname, enum_value.enumlabel
+                FROM manifest_tables mt
+                JOIN pg_namespace table_ns ON table_ns.nspname = mt.schema_name
+                JOIN pg_class table_class
+                  ON table_class.relnamespace = table_ns.oid
+                 AND table_class.relname = mt.table_name
+                JOIN pg_attribute attr ON attr.attrelid = table_class.oid
+                JOIN pg_type enum_type ON enum_type.oid = attr.atttypid
+                JOIN pg_namespace enum_ns ON enum_ns.oid = enum_type.typnamespace
+                JOIN pg_enum enum_value ON enum_value.enumtypid = enum_type.oid
+                WHERE attr.attnum > 0
+                  AND NOT attr.attisdropped
+                  AND enum_type.typtype = 'e'
+                GROUP BY enum_ns.nspname, enum_type.typname, enum_value.enumlabel, enum_value.enumsortorder
+                ORDER BY enum_ns.nspname, enum_type.typname, enum_value.enumsortorder
+                """,
+                ([schema for schema, _ in table_pairs], [table for _, table in table_pairs]),
+            )
+            rows = cur.fetchall()
+
+        enum_labels: dict[tuple[str, str], list[str]] = {}
+        for schema, type_name, label in rows:
+            enum_labels.setdefault((str(schema), str(type_name)), []).append(str(label))
+        logger.debug(
+            "[BackupService] _get_enum_labels_for_manifest_tables %s enum_types=%d",
+            LOG_SEP,
+            len(enum_labels),
+        )
+        return enum_labels
+
     def _enum_type_block(self, schema: str, type_name: str, labels: Sequence[str]) -> str:
         enum_values = ", ".join(sql_literal(label) for label in labels)
         return "\n".join(
@@ -688,6 +809,7 @@ class BackupService:
         ddl_path: Path,
         backup_root: Path | None = None,
         manifest_tables: Sequence[dict] | None = None,
+        source_enum_labels: dict[tuple[str, str], list[str]] | None = None,
     ) -> str:
         logger.debug(
             "[BackupService] _read_restore_ddl %s path=%s",
@@ -701,10 +823,16 @@ class BackupService:
             len(ddl_sql.encode("utf-8")),
         )
         ddl_sql = self._remove_invalid_not_null_constraint_blocks(ddl_sql)
+        ddl_sql = self._move_foreign_key_blocks_after_other_constraints(ddl_sql)
         ddl_sql = self._terminate_create_index_lines(ddl_sql)
         ddl_sql = self._inject_missing_sequence_creates(ddl_sql)
         ddl_sql = self._inject_required_extensions(ddl_sql)
-        ddl_sql = self._inject_missing_enum_types(ddl_sql, backup_root, manifest_tables)
+        ddl_sql = self._inject_missing_enum_types(
+            ddl_sql,
+            backup_root,
+            manifest_tables,
+            source_enum_labels,
+        )
         logger.debug(
             "[BackupService] _read_restore_ddl %s success bytes=%d",
             LOG_SEP,
@@ -793,6 +921,7 @@ class BackupService:
         ddl_sql: str,
         backup_root: Path | None,
         manifest_tables: Sequence[dict] | None,
+        source_enum_labels: dict[tuple[str, str], list[str]] | None = None,
     ) -> str:
         enum_columns = self._extract_enum_columns_from_ddl(ddl_sql)
         if not enum_columns:
@@ -810,6 +939,8 @@ class BackupService:
         enum_labels = self._infer_enum_labels_from_ddl(ddl_sql, enum_columns)
         if backup_root is not None and manifest_tables is not None:
             self._infer_enum_labels_from_csv(backup_root, manifest_tables, enum_columns, enum_labels)
+        if source_enum_labels:
+            self._merge_enum_labels(enum_labels, source_enum_labels)
 
         enum_blocks = []
         for enum_key in sorted({column_info[2] for column_info in enum_columns}):
@@ -817,6 +948,14 @@ class BackupService:
             if self._normalize_regclass_name(f"{schema}.{type_name}") in existing_enum_types:
                 continue
             labels = enum_labels.get(enum_key, [])
+            if not labels:
+                logger.warning(
+                    "[BackupService] _inject_missing_enum_types %s empty_labels_using_placeholder enum=%s.%s",
+                    LOG_SEP,
+                    schema,
+                    type_name,
+                )
+                labels = ["__RESTORE_PLACEHOLDER__"]
             enum_blocks.append(self._enum_type_block(schema, type_name, labels))
 
         if not enum_blocks:
@@ -829,6 +968,25 @@ class BackupService:
             len(enum_blocks),
         )
         return self._insert_lines_after_schema_creates(ddl_sql, enum_blocks)
+
+    def _merge_enum_labels(
+        self,
+        enum_labels: dict[tuple[str, str], list[str]],
+        source_enum_labels: dict[tuple[str, str], list[str]],
+    ) -> None:
+        merged_count = 0
+        for enum_key, labels in source_enum_labels.items():
+            target_labels = enum_labels.setdefault(enum_key, [])
+            before_count = len(target_labels)
+            for label in labels:
+                self._add_unique_enum_label(target_labels, label)
+            if len(target_labels) != before_count:
+                merged_count += 1
+        logger.debug(
+            "[BackupService] _merge_enum_labels %s merged_enum_types=%d",
+            LOG_SEP,
+            merged_count,
+        )
 
     def _extract_enum_columns_from_ddl(self, ddl_sql: str) -> list[tuple[str, str, tuple[str, str], str]]:
         enum_columns = []
@@ -1085,6 +1243,114 @@ class BackupService:
             len(cleaned_sql.encode("utf-8")),
         )
         return cleaned_sql + "\n"
+
+    def _move_foreign_key_blocks_after_other_constraints(self, ddl_sql: str) -> str:
+        logger.debug(
+            "[BackupService] _move_foreign_key_blocks_after_other_constraints %s start bytes=%d",
+            LOG_SEP,
+            len(ddl_sql.encode("utf-8")),
+        )
+        output_lines = []
+        block_lines: list[str] = []
+        foreign_key_blocks: list[str] = []
+        in_do_block = False
+        moved_count = 0
+
+        for line in ddl_sql.splitlines():
+            if not in_do_block and re.match(r"^\s*DO\s+\$\$", line, flags=re.I):
+                in_do_block = True
+                block_lines = [line]
+                continue
+
+            if in_do_block:
+                block_lines.append(line)
+                if re.match(r"^\s*END\s+\$\$;", line, flags=re.I):
+                    block_text = "\n".join(block_lines)
+                    block_upper = block_text.upper()
+                    is_foreign_key_constraint = (
+                        "ADD CONSTRAINT" in block_upper and " FOREIGN KEY " in block_upper
+                    )
+                    if is_foreign_key_constraint:
+                        foreign_key_blocks.append(block_text)
+                        moved_count += 1
+                    else:
+                        output_lines.extend(block_lines)
+                    in_do_block = False
+                    block_lines = []
+                continue
+
+            output_lines.append(line)
+
+        if in_do_block:
+            logger.warning(
+                "[BackupService] _move_foreign_key_blocks_after_other_constraints %s unterminated_do_block_preserved lines=%d",
+                LOG_SEP,
+                len(block_lines),
+            )
+            output_lines.extend(block_lines)
+
+        if foreign_key_blocks:
+            output_lines.append("")
+            output_lines.extend(foreign_key_blocks)
+
+        logger.debug(
+            "[BackupService] _move_foreign_key_blocks_after_other_constraints %s success moved=%d",
+            LOG_SEP,
+            moved_count,
+        )
+        return "\n".join(output_lines) + "\n"
+
+    def _split_foreign_key_constraint_blocks(self, ddl_sql: str) -> tuple[str, str]:
+        logger.debug(
+            "[BackupService] _split_foreign_key_constraint_blocks %s start bytes=%d",
+            LOG_SEP,
+            len(ddl_sql.encode("utf-8")),
+        )
+        schema_lines = []
+        foreign_key_blocks: list[str] = []
+        block_lines: list[str] = []
+        in_do_block = False
+
+        for line in ddl_sql.splitlines():
+            if not in_do_block and re.match(r"^\s*DO\s+\$\$", line, flags=re.I):
+                in_do_block = True
+                block_lines = [line]
+                continue
+
+            if in_do_block:
+                block_lines.append(line)
+                if re.match(r"^\s*END\s+\$\$;", line, flags=re.I):
+                    block_text = "\n".join(block_lines)
+                    block_upper = block_text.upper()
+                    is_foreign_key_constraint = (
+                        "ADD CONSTRAINT" in block_upper and " FOREIGN KEY " in block_upper
+                    )
+                    if is_foreign_key_constraint:
+                        foreign_key_blocks.append(block_text)
+                    else:
+                        schema_lines.extend(block_lines)
+                    in_do_block = False
+                    block_lines = []
+                continue
+
+            schema_lines.append(line)
+
+        if in_do_block:
+            logger.warning(
+                "[BackupService] _split_foreign_key_constraint_blocks %s unterminated_do_block_preserved lines=%d",
+                LOG_SEP,
+                len(block_lines),
+            )
+            schema_lines.extend(block_lines)
+
+        schema_ddl = "\n".join(schema_lines) + "\n"
+        foreign_key_ddl = "\n\n".join(foreign_key_blocks) + ("\n" if foreign_key_blocks else "")
+        logger.info(
+            "[BackupService] _split_foreign_key_constraint_blocks %s success foreign_keys=%d",
+            LOG_SEP,
+            len(foreign_key_blocks),
+        )
+        return schema_ddl, foreign_key_ddl
 
     def _terminate_create_index_lines(self, ddl_sql: str) -> str:
         fixed_lines = []
