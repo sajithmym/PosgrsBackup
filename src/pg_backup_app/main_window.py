@@ -10,9 +10,8 @@ from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
-    QFormLayout,
+    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -20,7 +19,6 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
-    QStyle,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -60,19 +58,22 @@ class MainWindow(QMainWindow):
         self._last_backup_root: Path | None = None
         self.setWindowTitle("PostgreSQL Backup and Restore")
         self.setWindowIcon(self._create_app_icon())
-        self.setMinimumSize(1040, 780)
+        self.setMinimumSize(1120, 840)
         self._build_ui()
         self._load_settings()
         self._apply_selected_theme()
 
     def _build_ui(self) -> None:
         root = QWidget()
+        root.setObjectName("AppRoot")
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(32, 28, 32, 28)
+        layout.setSpacing(18)
 
         header = QHBoxLayout()
+        header.setSpacing(18)
         header_text = QVBoxLayout()
+        header_text.setSpacing(8)
         title = QLabel("PostgreSQL Backup and Restore")
         title.setObjectName("Title")
         subtitle = QLabel(
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         header.addLayout(header_text, 1)
 
         theme_layout = QVBoxLayout()
+        theme_layout.setSpacing(6)
         theme_label = QLabel("Theme")
         theme_label.setObjectName("SmallLabel")
         self.theme_combo = QComboBox()
@@ -101,13 +103,12 @@ class MainWindow(QMainWindow):
         top_grid.setColumnStretch(0, 1)
         top_grid.setColumnStretch(1, 1)
         top_grid.setHorizontalSpacing(18)
+        top_grid.setVerticalSpacing(18)
 
-        connection_box = QGroupBox("Connection")
-        form = QFormLayout(connection_box)
-        form.setLabelAlignment(Qt.AlignLeft)
-        form.setFormAlignment(Qt.AlignTop)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(12)
+        connection_card = self._card("Connection")
+        connection_grid = QGridLayout()
+        connection_grid.setHorizontalSpacing(16)
+        connection_grid.setVerticalSpacing(10)
 
         self.host_input = QLineEdit("localhost")
         self.port_input = QLineEdit("5432")
@@ -117,21 +118,24 @@ class MainWindow(QMainWindow):
         self.database_input = QLineEdit()
         self.database_input.setPlaceholderText("Database name")
 
-        form.addRow("Host", self.host_input)
-        form.addRow("Port", self.port_input)
-        form.addRow("User", self.user_input)
-        form.addRow("Password", self.password_input)
-        form.addRow("Database", self.database_input)
+        self._add_input_row(connection_grid, 0, 0, "Host", self.host_input)
+        self._add_input_row(connection_grid, 1, 0, "Port", self.port_input)
+        self._add_input_row(connection_grid, 2, 0, "User", self.user_input)
+        self._add_input_row(connection_grid, 0, 2, "Password", self.password_input)
+        self._add_input_row(connection_grid, 1, 2, "Database", self.database_input)
 
         self.test_button = QPushButton("Test Connection")
-        self.test_button.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
+        self.test_button.setObjectName("OutlineButton")
         self.test_button.clicked.connect(self._start_test_connection)
-        form.addRow("", self.test_button)
-        top_grid.addWidget(connection_box, 0, 0)
+        connection_grid.addWidget(self.test_button, 2, 3)
+        connection_grid.setColumnStretch(1, 1)
+        connection_grid.setColumnStretch(3, 1)
+        connection_card.layout().addLayout(connection_grid)
+        top_grid.addWidget(connection_card, 0, 0)
 
-        folder_box = QGroupBox("Folders")
-        folder_layout = QVBoxLayout(folder_box)
-        folder_layout.setSpacing(12)
+        folder_card = self._card("Folders")
+        folder_layout = QVBoxLayout()
+        folder_layout.setSpacing(14)
 
         self.backup_parent_input = QLineEdit()
         self.backup_parent_input.setPlaceholderText("Choose where new backup folders are created")
@@ -152,29 +156,29 @@ class MainWindow(QMainWindow):
         folder_layout.addLayout(restore_folder_row)
 
         self.open_backup_button = QPushButton("Open Last Backup")
-        self.open_backup_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.open_backup_button.setObjectName("OutlineButton")
         self.open_backup_button.clicked.connect(self._open_last_backup_folder)
         self.open_backup_button.setEnabled(False)
         folder_layout.addWidget(self.open_backup_button)
-        top_grid.addWidget(folder_box, 0, 1)
+        folder_card.layout().addLayout(folder_layout)
+        top_grid.addWidget(folder_card, 0, 1)
         layout.addLayout(top_grid)
 
         action_grid = QGridLayout()
         action_grid.setColumnStretch(0, 1)
         action_grid.setColumnStretch(1, 1)
+        action_grid.setHorizontalSpacing(16)
         self.backup_button = QPushButton("Backup Database")
-        self.backup_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
         self.backup_button.clicked.connect(self._start_backup)
         self.restore_button = QPushButton("Restore Database")
-        self.restore_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         self.restore_button.setObjectName("SecondaryButton")
         self.restore_button.clicked.connect(self._start_restore)
         action_grid.addWidget(self.backup_button, 0, 0)
         action_grid.addWidget(self.restore_button, 0, 1)
         layout.addLayout(action_grid)
 
-        status_box = QGroupBox("Status")
-        status_layout = QVBoxLayout(status_box)
+        status_card = self._card("Status")
+        status_layout = QVBoxLayout()
         status_layout.setSpacing(10)
         self.summary_label = QLabel("Ready")
         self.summary_label.setObjectName("SummaryLabel")
@@ -183,20 +187,19 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.status_output = QTextEdit()
         self.status_output.setReadOnly(True)
-        self.status_output.setMinimumHeight(260)
+        self.status_output.setMinimumHeight(300)
         self.status_output.setPlaceholderText("Backup and restore progress will appear here.")
         status_layout.addWidget(self.summary_label)
         status_layout.addWidget(self.progress_bar)
         status_layout.addWidget(self.status_output, 1)
-        layout.addWidget(status_box, 1)
+        status_card.layout().addLayout(status_layout)
+        layout.addWidget(status_card, 1)
 
         footer = QHBoxLayout()
         footer.addStretch(1)
         self.copy_log_button = QPushButton("Copy Status")
-        self.copy_log_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
         self.copy_log_button.clicked.connect(self._copy_status)
         self.clear_button = QPushButton("Clear")
-        self.clear_button.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
         self.clear_button.setObjectName("GhostButton")
         self.clear_button.clicked.connect(self.status_output.clear)
         footer.addWidget(self.copy_log_button)
@@ -207,12 +210,36 @@ class MainWindow(QMainWindow):
 
     def _path_row(self, line_edit: QLineEdit, button_text: str, handler: Callable[[], None]) -> QHBoxLayout:
         row = QHBoxLayout()
+        row.setSpacing(12)
         button = QPushButton(button_text)
-        button.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
         button.clicked.connect(handler)
         row.addWidget(line_edit, 1)
         row.addWidget(button)
         return row
+
+    def _card(self, title: str) -> QFrame:
+        card = QFrame()
+        card.setObjectName("Card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(22, 18, 22, 22)
+        layout.setSpacing(14)
+        label = QLabel(title)
+        label.setObjectName("SectionTitle")
+        layout.addWidget(label)
+        return card
+
+    def _add_input_row(
+        self,
+        layout: QGridLayout,
+        row: int,
+        column: int,
+        label_text: str,
+        field: QLineEdit,
+    ) -> None:
+        label = QLabel(label_text)
+        label.setObjectName("FieldLabel")
+        layout.addWidget(label, row, column)
+        layout.addWidget(field, row, column + 1)
 
     def _create_app_icon(self) -> QIcon:
         pixmap = QPixmap(64, 64)
@@ -274,7 +301,24 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(self._dark_stylesheet() if theme == self.THEME_DARK else self._light_stylesheet())
 
     def _system_prefers_dark(self) -> bool:
+        if sys.platform.startswith("win"):
+            windows_value = self._windows_apps_use_light_theme()
+            if windows_value is not None:
+                return windows_value == 0
         return QApplication.palette().window().color().lightness() < 128
+
+    def _windows_apps_use_light_theme(self) -> int | None:
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            ) as key:
+                value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+                return int(value)
+        except OSError:
+            return None
 
     def _select_backup_parent(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose Save Folder", self.backup_parent_input.text())
@@ -433,6 +477,7 @@ class MainWindow(QMainWindow):
         *,
         background: str,
         panel: str,
+        panel_alt: str,
         text: str,
         muted: str,
         border: str,
@@ -442,6 +487,7 @@ class MainWindow(QMainWindow):
         secondary: str,
         secondary_hover: str,
         status: str,
+        disabled: str,
     ) -> str:
         return f"""
             QWidget {{
@@ -450,8 +496,11 @@ class MainWindow(QMainWindow):
                 font-family: Segoe UI, Arial, sans-serif;
                 font-size: 14px;
             }}
+            #AppRoot {{
+                background: {background};
+            }}
             #Title {{
-                font-size: 28px;
+                font-size: 30px;
                 font-weight: 700;
                 color: {text};
             }}
@@ -459,34 +508,43 @@ class MainWindow(QMainWindow):
                 color: {muted};
                 font-size: 14px;
             }}
-            #SummaryLabel {{
+            #SmallLabel {{
+                font-weight: 600;
+            }}
+            #SectionTitle {{
+                background: transparent;
+                color: {text};
+                font-size: 15px;
+                font-weight: 700;
+            }}
+            #FieldLabel {{
+                background: transparent;
                 color: {muted};
                 font-weight: 600;
+                min-width: 78px;
             }}
-            QGroupBox {{
+            #SummaryLabel {{
+                background: {panel_alt};
+                color: {text};
+                font-weight: 600;
+                border-radius: 7px;
+                padding: 8px 10px;
+            }}
+            QFrame#Card {{
                 background: {panel};
                 border: 1px solid {border};
-                border-radius: 8px;
-                margin-top: 14px;
-                padding: 18px;
-                font-weight: 600;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 14px;
-                padding: 0 6px;
-                color: {text};
+                border-radius: 12px;
             }}
             QLineEdit, QTextEdit, QComboBox {{
                 background: {field};
                 color: {text};
                 border: 1px solid {border};
-                border-radius: 6px;
+                border-radius: 8px;
                 selection-background-color: {primary};
             }}
             QLineEdit, QComboBox {{
-                min-height: 36px;
-                padding: 4px 12px;
+                min-height: 40px;
+                padding: 4px 14px;
             }}
             QTextEdit {{
                 background: {status};
@@ -501,16 +559,17 @@ class MainWindow(QMainWindow):
                 background: {primary};
                 color: #ffffff;
                 border: none;
-                border-radius: 7px;
-                padding: 12px 18px;
+                border-radius: 9px;
+                min-height: 38px;
+                padding: 9px 18px;
                 font-weight: 600;
             }}
             QPushButton:hover {{
                 background: {primary_hover};
             }}
             QPushButton:disabled {{
-                background: #8b98a8;
-                color: #edf1f6;
+                background: {disabled};
+                color: {muted};
             }}
             #SecondaryButton {{
                 background: {secondary};
@@ -518,56 +577,73 @@ class MainWindow(QMainWindow):
             #SecondaryButton:hover {{
                 background: {secondary_hover};
             }}
-            #GhostButton {{
+            #GhostButton, #OutlineButton {{
                 background: transparent;
                 color: {primary};
                 border: 1px solid {border};
             }}
-            #GhostButton:hover {{
-                background: {field};
+            #GhostButton:hover, #OutlineButton:hover {{
+                background: {panel_alt};
+            }}
+            #OutlineButton {{
+                min-height: 40px;
             }}
             QProgressBar {{
                 border: 1px solid {border};
-                border-radius: 6px;
+                border-radius: 7px;
                 background: {field};
-                height: 18px;
+                height: 20px;
                 text-align: center;
                 color: {text};
             }}
             QProgressBar::chunk {{
                 background: {primary};
-                border-radius: 6px;
+                border-radius: 7px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 28px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {panel};
+                color: {text};
+                border: 1px solid {border};
+                selection-background-color: {primary};
             }}
         """
 
     def _light_stylesheet(self) -> str:
         return self._base_stylesheet(
-            background="#f6f7fb",
+            background="#f3f6fb",
             panel="#ffffff",
+            panel_alt="#f7f9fc",
             text="#101828",
-            muted="#526070",
-            border="#c8d1dc",
+            muted="#5b6778",
+            border="#d4dce8",
             field="#ffffff",
-            primary="#1769e0",
-            primary_hover="#1259c4",
-            secondary="#1f7a5c",
-            secondary_hover="#19664d",
+            primary="#2563eb",
+            primary_hover="#1d4ed8",
+            secondary="#0f8b6b",
+            secondary_hover="#0b755b",
             status="#ffffff",
+            disabled="#e4eaf2",
         )
 
     def _dark_stylesheet(self) -> str:
         return self._base_stylesheet(
-            background="#111827",
-            panel="#182233",
-            text="#f2f5f9",
-            muted="#a7b2c1",
-            border="#334155",
-            field="#0f172a",
-            primary="#3b82f6",
-            primary_hover="#2563eb",
-            secondary="#10b981",
-            secondary_hover="#059669",
-            status="#0b1120",
+            background="#0f1623",
+            panel="#151f2e",
+            panel_alt="#101827",
+            text="#eef4fb",
+            muted="#9cadbf",
+            border="#2b3a4f",
+            field="#0d1421",
+            primary="#4f8cff",
+            primary_hover="#3b76e8",
+            secondary="#15b98f",
+            secondary_hover="#0fa77f",
+            status="#0a101b",
+            disabled="#243247",
         )
 
 

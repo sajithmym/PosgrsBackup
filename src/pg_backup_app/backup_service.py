@@ -130,7 +130,7 @@ class BackupService:
             try:
                 with conn.cursor() as cur:
                     self._notify(progress, "Creating schemas and tables...")
-                    cur.execute(ddl_path.read_text(encoding="utf-8"))
+                    cur.execute(self._read_restore_ddl(ddl_path))
 
                 for index, table_info in enumerate(tables, start=1):
                     schema = str(table_info["schema"])
@@ -278,7 +278,7 @@ class BackupService:
 
             cur.execute(
                 """
-                SELECT conname, pg_get_constraintdef(oid, true)
+                SELECT conname, pg_get_constraintdef(oid, true), contype
                 FROM pg_constraint
                 WHERE conrelid = %s
                 ORDER BY CASE contype
@@ -330,7 +330,9 @@ class BackupService:
             ");",
         ]
         constraint_blocks = [
-            self._constraint_block(table, name, definition) for name, definition in constraints
+            self._constraint_block(table, name, definition)
+            for name, definition, constraint_type in constraints
+            if constraint_type != "n" and not str(definition).upper().startswith("NOT NULL ")
         ]
         return create_lines, constraint_blocks, indexes
 
@@ -353,12 +355,42 @@ class BackupService:
         )
 
     def _index_with_if_not_exists(self, indexdef: str) -> str:
-        return re.sub(
+        index_sql = re.sub(
             r"^CREATE\s+(UNIQUE\s+)?INDEX\s+",
             r"CREATE \1INDEX IF NOT EXISTS ",
             indexdef,
             flags=re.I,
         )
+        return self._ensure_sql_statement_terminator(index_sql)
+
+    def _read_restore_ddl(self, ddl_path: Path) -> str:
+        ddl_sql = ddl_path.read_text(encoding="utf-8")
+        ddl_sql = self._remove_invalid_not_null_constraint_blocks(ddl_sql)
+        ddl_sql = self._terminate_create_index_lines(ddl_sql)
+        return ddl_sql
+
+    def _remove_invalid_not_null_constraint_blocks(self, ddl_sql: str) -> str:
+        return re.sub(
+            r"DO\s+\$\$\s*BEGIN\s*IF\s+NOT\s+EXISTS\s*\(.*?\)\s*THEN\s*"
+            r"ALTER\s+TABLE\s+ONLY\s+.*?\s+ADD\s+CONSTRAINT\s+.*?\s+NOT\s+NULL\s+.*?;"
+            r"\s*END\s+IF;\s*END\s+\$\$;",
+            "",
+            ddl_sql,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+    def _terminate_create_index_lines(self, ddl_sql: str) -> str:
+        fixed_lines = []
+        for line in ddl_sql.splitlines():
+            stripped = line.rstrip()
+            if re.match(r"^\s*CREATE\s+(UNIQUE\s+)?INDEX\s+", stripped, flags=re.I):
+                stripped = self._ensure_sql_statement_terminator(stripped)
+            fixed_lines.append(stripped)
+        return "\n".join(fixed_lines) + "\n"
+
+    def _ensure_sql_statement_terminator(self, sql_text: str) -> str:
+        stripped = sql_text.rstrip()
+        return stripped if stripped.endswith(";") else stripped + ";"
 
     def _export_table_csv(
         self, conn: PgConnection, table: TableRef, columns: Sequence[str], destination: Path

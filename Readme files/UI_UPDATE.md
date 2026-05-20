@@ -8,9 +8,11 @@ The app now has a more complete desktop workflow: persistent theme selection, re
 
 - Removed the previous file-based debug trace layer.
 - Added System, Light, and Dark theme modes.
+- On Windows, System theme now reads the Windows app-theme registry value because Qt can report a light palette even when Windows is in dark app mode.
 - Saved the selected theme with `QSettings`; default mode is System.
 - Remembered host, port, user, database, backup save folder, restore folder, and last backup folder.
 - Kept password out of saved settings.
+- Rebuilt the UI with card panels instead of group boxes, so the connection form and buttons remain visible.
 - Increased window size and status console height.
 - Added `Test Connection`, `Open Last Backup`, and `Copy Status` buttons.
 - Kept backup and restore service behavior unchanged.

@@ -34,7 +34,7 @@ The fields are auto-filled where defaults exist, and the user can change them be
 
 ## UI Features
 
-- System, Light, and Dark themes.
+- System, Light, and Dark themes. On Windows, System mode follows the Windows app theme setting.
 - Theme preference is saved with `QSettings` and restored when the app opens again.
 - Non-secret workspace values are remembered: host, port, user, database, backup save folder, restore folder, and last completed backup folder.
 - Passwords are not saved.
@@ -83,9 +83,9 @@ The restore runs in a database transaction. If an error occurs, the app rolls ba
 2. Enter valid PostgreSQL connection details and database name.
 3. Optionally click `Test Connection`.
 4. Choose a save folder, click `Backup Database`, and confirm the backup folder contains `csv`, `sql`, `table_creation_sql`, and `manifest.json`.
-4. Create or choose an empty target database.
-5. Enter the target database connection details.
-6. Choose the generated backup folder, click `Restore Database`, and confirm tables/data are restored.
+5. Create or choose an empty target database.
+6. Enter the target database connection details.
+7. Choose the generated backup folder, click `Restore Database`, and confirm tables/data are restored.
 
 ## Next Steps
 
