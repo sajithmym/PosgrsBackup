@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -58,7 +59,8 @@ class MainWindow(QMainWindow):
         self._last_backup_root: Path | None = None
         self.setWindowTitle("PostgreSQL Backup and Restore")
         self.setWindowIcon(self._create_app_icon())
-        self.setMinimumSize(1120, 840)
+        self.setMinimumSize(980, 700)
+        self.resize(1120, 760)
         self._build_ui()
         self._load_settings()
         self._apply_selected_theme()
@@ -67,13 +69,13 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setObjectName("AppRoot")
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(18)
+        layout.setContentsMargins(28, 20, 28, 18)
+        layout.setSpacing(12)
 
         header = QHBoxLayout()
         header.setSpacing(18)
         header_text = QVBoxLayout()
-        header_text.setSpacing(8)
+        header_text.setSpacing(6)
         title = QLabel("PostgreSQL Backup and Restore")
         title.setObjectName("Title")
         subtitle = QLabel(
@@ -86,7 +88,7 @@ class MainWindow(QMainWindow):
         header.addLayout(header_text, 1)
 
         theme_layout = QVBoxLayout()
-        theme_layout.setSpacing(6)
+        theme_layout.setSpacing(4)
         theme_label = QLabel("Theme")
         theme_label.setObjectName("SmallLabel")
         self.theme_combo = QComboBox()
@@ -102,8 +104,8 @@ class MainWindow(QMainWindow):
         top_grid = QGridLayout()
         top_grid.setColumnStretch(0, 1)
         top_grid.setColumnStretch(1, 1)
-        top_grid.setHorizontalSpacing(18)
-        top_grid.setVerticalSpacing(18)
+        top_grid.setHorizontalSpacing(16)
+        top_grid.setVerticalSpacing(12)
 
         connection_card = self._card("Connection")
         connection_grid = QGridLayout()
@@ -168,6 +170,7 @@ class MainWindow(QMainWindow):
         action_grid.setColumnStretch(0, 1)
         action_grid.setColumnStretch(1, 1)
         action_grid.setHorizontalSpacing(16)
+        action_grid.setVerticalSpacing(0)
         self.backup_button = QPushButton("Backup Database")
         self.backup_button.clicked.connect(self._start_backup)
         self.restore_button = QPushButton("Restore Database")
@@ -180,31 +183,31 @@ class MainWindow(QMainWindow):
         status_card = self._card("Status")
         status_layout = QVBoxLayout()
         status_layout.setSpacing(10)
+        status_header = QHBoxLayout()
+        status_header.setSpacing(10)
         self.summary_label = QLabel("Ready")
         self.summary_label.setObjectName("SummaryLabel")
+        self.copy_log_button = QPushButton("Copy Status")
+        self.copy_log_button.clicked.connect(self._copy_status)
+        self.clear_button = QPushButton("Clear")
+        self.clear_button.setObjectName("GhostButton")
+        self.clear_button.clicked.connect(lambda: self.status_output.clear())
+        status_header.addWidget(self.summary_label, 1)
+        status_header.addWidget(self.copy_log_button)
+        status_header.addWidget(self.clear_button)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.status_output = QTextEdit()
         self.status_output.setReadOnly(True)
-        self.status_output.setMinimumHeight(300)
+        self.status_output.setMinimumHeight(165)
+        self.status_output.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.status_output.setPlaceholderText("Backup and restore progress will appear here.")
-        status_layout.addWidget(self.summary_label)
+        status_layout.addLayout(status_header)
         status_layout.addWidget(self.progress_bar)
         status_layout.addWidget(self.status_output, 1)
         status_card.layout().addLayout(status_layout)
         layout.addWidget(status_card, 1)
-
-        footer = QHBoxLayout()
-        footer.addStretch(1)
-        self.copy_log_button = QPushButton("Copy Status")
-        self.copy_log_button.clicked.connect(self._copy_status)
-        self.clear_button = QPushButton("Clear")
-        self.clear_button.setObjectName("GhostButton")
-        self.clear_button.clicked.connect(self.status_output.clear)
-        footer.addWidget(self.copy_log_button)
-        footer.addWidget(self.clear_button)
-        layout.addLayout(footer)
 
         self.setCentralWidget(root)
 
@@ -221,8 +224,8 @@ class MainWindow(QMainWindow):
         card = QFrame()
         card.setObjectName("Card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(22, 18, 22, 22)
-        layout.setSpacing(14)
+        layout.setContentsMargins(20, 14, 20, 16)
+        layout.setSpacing(10)
         label = QLabel(title)
         label.setObjectName("SectionTitle")
         layout.addWidget(label)
@@ -500,7 +503,7 @@ class MainWindow(QMainWindow):
                 background: {background};
             }}
             #Title {{
-                font-size: 30px;
+                font-size: 28px;
                 font-weight: 700;
                 color: {text};
             }}
@@ -543,12 +546,12 @@ class MainWindow(QMainWindow):
                 selection-background-color: {primary};
             }}
             QLineEdit, QComboBox {{
-                min-height: 40px;
+                min-height: 36px;
                 padding: 4px 14px;
             }}
             QTextEdit {{
                 background: {status};
-                padding: 10px;
+                padding: 8px 10px;
                 font-family: Consolas, Cascadia Mono, monospace;
                 font-size: 13px;
             }}
@@ -560,8 +563,8 @@ class MainWindow(QMainWindow):
                 color: #ffffff;
                 border: none;
                 border-radius: 9px;
-                min-height: 38px;
-                padding: 9px 18px;
+                min-height: 34px;
+                padding: 8px 16px;
                 font-weight: 600;
             }}
             QPushButton:hover {{
@@ -586,13 +589,13 @@ class MainWindow(QMainWindow):
                 background: {panel_alt};
             }}
             #OutlineButton {{
-                min-height: 40px;
+                min-height: 36px;
             }}
             QProgressBar {{
                 border: 1px solid {border};
                 border-radius: 7px;
                 background: {field};
-                height: 20px;
+                height: 18px;
                 text-align: center;
                 color: {text};
             }}
