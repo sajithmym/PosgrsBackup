@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Callable
@@ -27,6 +28,11 @@ from PyQt5.QtWidgets import (
 
 from .backup_service import BackupService
 from .db import DbConnectionConfig, connect_to_database
+from .logging_config import configure_console_logging
+
+
+logger = logging.getLogger(__name__)
+LOG_SEP = "\u2014"
 
 
 class OperationWorker(QThread):
@@ -37,12 +43,20 @@ class OperationWorker(QThread):
     def __init__(self, operation: Callable[[Callable[[str], None]], object]) -> None:
         super().__init__()
         self._operation = operation
+        logger.debug("[OperationWorker] __init__ %s worker_created", LOG_SEP)
 
     def run(self) -> None:
+        logger.info("[OperationWorker] run %s start", LOG_SEP)
         try:
             result = self._operation(self.progress.emit)
+            logger.info(
+                "[OperationWorker] run %s success result_type=%s",
+                LOG_SEP,
+                type(result).__name__,
+            )
             self.succeeded.emit(result)
         except Exception as exc:
+            logger.exception("[OperationWorker] run %s FAILED error=%s", LOG_SEP, exc)
             self.failed.emit(str(exc))
 
 
@@ -52,6 +66,7 @@ class MainWindow(QMainWindow):
     THEME_DARK = "dark"
 
     def __init__(self) -> None:
+        logger.info("[MainWindow] __init__ %s start", LOG_SEP)
         super().__init__()
         self._service = BackupService()
         self._settings = QSettings("PosgrsBackup", "PostgreSQLBackupRestore")
@@ -64,8 +79,10 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._load_settings()
         self._apply_selected_theme()
+        logger.info("[MainWindow] __init__ %s success", LOG_SEP)
 
     def _build_ui(self) -> None:
+        logger.debug("[MainWindow] _build_ui %s start", LOG_SEP)
         root = QWidget()
         root.setObjectName("AppRoot")
         layout = QVBoxLayout(root)
@@ -210,6 +227,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(status_card, 1)
 
         self.setCentralWidget(root)
+        logger.debug("[MainWindow] _build_ui %s success", LOG_SEP)
 
     def _path_row(self, line_edit: QLineEdit, button_text: str, handler: Callable[[], None]) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -245,6 +263,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(field, row, column + 1)
 
     def _create_app_icon(self) -> QIcon:
+        logger.debug("[MainWindow] _create_app_icon %s start", LOG_SEP)
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.transparent)
 
@@ -262,9 +281,11 @@ class MainWindow(QMainWindow):
         painter.drawLine(36, 27, 42, 32)
         painter.drawLine(36, 37, 42, 32)
         painter.end()
+        logger.debug("[MainWindow] _create_app_icon %s success", LOG_SEP)
         return QIcon(pixmap)
 
     def _load_settings(self) -> None:
+        logger.debug("[MainWindow] _load_settings %s start", LOG_SEP)
         self.host_input.setText(self._settings.value("connection/host", "localhost"))
         self.port_input.setText(self._settings.value("connection/port", "5432"))
         self.user_input.setText(self._settings.value("connection/user", "postgres"))
@@ -279,8 +300,30 @@ class MainWindow(QMainWindow):
         theme = self._settings.value("ui/theme", self.THEME_SYSTEM)
         index = self.theme_combo.findData(theme)
         self.theme_combo.setCurrentIndex(index if index >= 0 else 0)
+        logger.info(
+            "[MainWindow] _load_settings %s success host=%s, port=%s, user=%s, database=%s, backup_parent_set=%s, restore_folder_set=%s, last_backup_set=%s, theme=%s",
+            LOG_SEP,
+            self.host_input.text().strip(),
+            self.port_input.text().strip(),
+            self.user_input.text().strip(),
+            self.database_input.text().strip(),
+            bool(self.backup_parent_input.text().strip()),
+            bool(self.restore_folder_input.text().strip()),
+            bool(last_backup),
+            theme,
+        )
 
     def _save_settings(self) -> None:
+        logger.debug(
+            "[MainWindow] _save_settings %s host=%s, port=%s, user=%s, database=%s, backup_parent_set=%s, restore_folder_set=%s",
+            LOG_SEP,
+            self.host_input.text().strip(),
+            self.port_input.text().strip(),
+            self.user_input.text().strip(),
+            self.database_input.text().strip(),
+            bool(self.backup_parent_input.text().strip()),
+            bool(self.restore_folder_input.text().strip()),
+        )
         self._settings.setValue("connection/host", self.host_input.text())
         self._settings.setValue("connection/port", self.port_input.text())
         self._settings.setValue("connection/user", self.user_input.text())
@@ -290,25 +333,46 @@ class MainWindow(QMainWindow):
         if self._last_backup_root:
             self._settings.setValue("folders/last_backup", str(self._last_backup_root))
         self._settings.sync()
+        logger.debug("[MainWindow] _save_settings %s success", LOG_SEP)
 
     def _theme_changed(self) -> None:
         theme = self.theme_combo.currentData()
+        logger.info("[MainWindow] _theme_changed %s theme=%s", LOG_SEP, theme)
         self._settings.setValue("ui/theme", theme)
         self._settings.sync()
         self._apply_selected_theme()
 
     def _apply_selected_theme(self) -> None:
         theme = self.theme_combo.currentData() or self.THEME_SYSTEM
+        selected_theme = theme
         if theme == self.THEME_SYSTEM:
             theme = self.THEME_DARK if self._system_prefers_dark() else self.THEME_LIGHT
         self.setStyleSheet(self._dark_stylesheet() if theme == self.THEME_DARK else self._light_stylesheet())
+        logger.info(
+            "[MainWindow] _apply_selected_theme %s selected=%s, applied=%s",
+            LOG_SEP,
+            selected_theme,
+            theme,
+        )
 
     def _system_prefers_dark(self) -> bool:
         if sys.platform.startswith("win"):
             windows_value = self._windows_apps_use_light_theme()
             if windows_value is not None:
-                return windows_value == 0
-        return QApplication.palette().window().color().lightness() < 128
+                prefers_dark = windows_value == 0
+                logger.debug(
+                    "[MainWindow] _system_prefers_dark %s source=windows_registry, prefers_dark=%s",
+                    LOG_SEP,
+                    prefers_dark,
+                )
+                return prefers_dark
+        prefers_dark = QApplication.palette().window().color().lightness() < 128
+        logger.debug(
+            "[MainWindow] _system_prefers_dark %s source=qt_palette, prefers_dark=%s",
+            LOG_SEP,
+            prefers_dark,
+        )
+        return prefers_dark
 
     def _windows_apps_use_light_theme(self) -> int | None:
         try:
@@ -319,65 +383,122 @@ class MainWindow(QMainWindow):
                 r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
             ) as key:
                 value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-                return int(value)
+                result = int(value)
+                logger.debug(
+                    "[MainWindow] _windows_apps_use_light_theme %s value=%s",
+                    LOG_SEP,
+                    result,
+                )
+                return result
         except OSError:
+            logger.warning(
+                "[MainWindow] _windows_apps_use_light_theme %s unavailable",
+                LOG_SEP,
+            )
             return None
 
     def _select_backup_parent(self) -> None:
+        logger.debug(
+            "[MainWindow] _select_backup_parent %s current_set=%s",
+            LOG_SEP,
+            bool(self.backup_parent_input.text().strip()),
+        )
         folder = QFileDialog.getExistingDirectory(self, "Choose Save Folder", self.backup_parent_input.text())
         if folder:
             self.backup_parent_input.setText(folder)
             self._save_settings()
+            logger.info("[MainWindow] _select_backup_parent %s selected path=%s", LOG_SEP, folder)
+        else:
+            logger.debug("[MainWindow] _select_backup_parent %s cancelled", LOG_SEP)
 
     def _select_restore_folder(self) -> None:
+        logger.debug(
+            "[MainWindow] _select_restore_folder %s current_set=%s",
+            LOG_SEP,
+            bool(self.restore_folder_input.text().strip()),
+        )
         folder = QFileDialog.getExistingDirectory(self, "Choose Backup Folder", self.restore_folder_input.text())
         if folder:
             self.restore_folder_input.setText(folder)
             self._save_settings()
+            logger.info("[MainWindow] _select_restore_folder %s selected path=%s", LOG_SEP, folder)
+        else:
+            logger.debug("[MainWindow] _select_restore_folder %s cancelled", LOG_SEP)
 
     def _start_test_connection(self) -> None:
+        logger.info("[MainWindow] _start_test_connection %s requested", LOG_SEP)
         config = self._read_config()
         if not config:
+            logger.warning("[MainWindow] _start_test_connection %s invalid_config", LOG_SEP)
             return
         self._save_settings()
 
         def operation(progress: Callable[[str], None]) -> str:
+            logger.info(
+                "[MainWindow] test_connection_operation %s start database=%s",
+                LOG_SEP,
+                config.database.strip(),
+            )
             progress("Testing PostgreSQL connection...")
             with connect_to_database(config):
                 pass
+            logger.info(
+                "[MainWindow] test_connection_operation %s success database=%s",
+                LOG_SEP,
+                config.database.strip(),
+            )
             return "Connection test successful."
 
         self._run_operation(operation, "Testing connection...")
 
     def _start_backup(self) -> None:
+        logger.info("[MainWindow] _start_backup %s requested", LOG_SEP)
         config = self._read_config()
         if not config:
+            logger.warning("[MainWindow] _start_backup %s invalid_config", LOG_SEP)
             return
 
         destination = self.backup_parent_input.text().strip()
         if not destination:
+            logger.warning("[MainWindow] _start_backup %s destination_missing_opening_dialog", LOG_SEP)
             self._select_backup_parent()
             destination = self.backup_parent_input.text().strip()
         if not destination:
+            logger.warning("[MainWindow] _start_backup %s cancelled_no_destination", LOG_SEP)
             return
         self._save_settings()
 
         def operation(progress: Callable[[str], None]) -> tuple[str, Path]:
+            logger.info(
+                "[MainWindow] backup_operation %s start database=%s, destination=%s",
+                LOG_SEP,
+                config.database.strip(),
+                destination,
+            )
             backup_root = self._service.backup_database(config, Path(destination), progress)
+            logger.info(
+                "[MainWindow] backup_operation %s success backup_root=%s",
+                LOG_SEP,
+                backup_root,
+            )
             return f"Backup completed successfully.\nFolder: {backup_root}", backup_root
 
         self._run_operation(operation, "Running backup...")
 
     def _start_restore(self) -> None:
+        logger.info("[MainWindow] _start_restore %s requested", LOG_SEP)
         config = self._read_config()
         if not config:
+            logger.warning("[MainWindow] _start_restore %s invalid_config", LOG_SEP)
             return
 
         backup_folder = self.restore_folder_input.text().strip()
         if not backup_folder:
+            logger.warning("[MainWindow] _start_restore %s backup_folder_missing_opening_dialog", LOG_SEP)
             self._select_restore_folder()
             backup_folder = self.restore_folder_input.text().strip()
         if not backup_folder:
+            logger.warning("[MainWindow] _start_restore %s cancelled_no_backup_folder", LOG_SEP)
             return
 
         confirm = QMessageBox.question(
@@ -388,11 +509,24 @@ class MainWindow(QMainWindow):
             QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:
+            logger.info("[MainWindow] _start_restore %s cancelled_by_user", LOG_SEP)
             return
         self._save_settings()
 
         def operation(progress: Callable[[str], None]) -> str:
+            logger.info(
+                "[MainWindow] restore_operation %s start database=%s, backup_folder=%s",
+                LOG_SEP,
+                config.database.strip(),
+                backup_folder,
+            )
             self._service.restore_database(config, Path(backup_folder), progress)
+            logger.info(
+                "[MainWindow] restore_operation %s success database=%s, backup_folder=%s",
+                LOG_SEP,
+                config.database.strip(),
+                backup_folder,
+            )
             return "Restore completed successfully."
 
         self._run_operation(operation, "Running restore...")
@@ -402,6 +536,7 @@ class MainWindow(QMainWindow):
         operation: Callable[[Callable[[str], None]], object],
         summary: str,
     ) -> None:
+        logger.info("[MainWindow] _run_operation %s summary=%s", LOG_SEP, summary)
         self._set_busy(True)
         self.progress_bar.setRange(0, 0)
         self.summary_label.setText(summary)
@@ -412,20 +547,33 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._operation_failed)
         self._worker.finished.connect(lambda: self._set_busy(False))
         self._worker.start()
+        logger.debug("[MainWindow] _run_operation %s worker_started", LOG_SEP)
 
     def _operation_succeeded(self, result: object) -> None:
+        logger.info(
+            "[MainWindow] _operation_succeeded %s result_type=%s",
+            LOG_SEP,
+            type(result).__name__,
+        )
         message = str(result)
         if isinstance(result, tuple) and len(result) == 2:
             message = str(result[0])
             self._last_backup_root = Path(result[1])
+            logger.info(
+                "[MainWindow] _operation_succeeded %s last_backup_root=%s",
+                LOG_SEP,
+                self._last_backup_root,
+            )
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
         self.summary_label.setText("Completed")
         self._append_status(message)
         self._save_settings()
         self.open_backup_button.setEnabled(bool(self._last_backup_root and self._last_backup_root.exists()))
+        logger.info("[MainWindow] _operation_succeeded %s ui_updated", LOG_SEP)
 
     def _operation_failed(self, message: str) -> None:
+        logger.error("[MainWindow] _operation_failed %s message=%s", LOG_SEP, message)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.summary_label.setText("Failed")
@@ -433,6 +581,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Operation Failed", message)
 
     def _set_busy(self, busy: bool) -> None:
+        logger.debug("[MainWindow] _set_busy %s state=%s", LOG_SEP, busy)
         for button in (
             self.backup_button,
             self.restore_button,
@@ -444,22 +593,41 @@ class MainWindow(QMainWindow):
             button.setDisabled(busy)
         if not busy:
             self.open_backup_button.setEnabled(bool(self._last_backup_root and self._last_backup_root.exists()))
+        logger.debug(
+            "[MainWindow] _set_busy %s success state=%s, open_last_enabled=%s",
+            LOG_SEP,
+            busy,
+            self.open_backup_button.isEnabled(),
+        )
 
     def _append_status(self, message: str) -> None:
+        logger.debug("[MainWindow] _append_status %s message=%s", LOG_SEP, message)
         self.status_output.append(message)
         self.status_output.verticalScrollBar().setValue(self.status_output.verticalScrollBar().maximum())
 
     def _copy_status(self) -> None:
+        logger.info(
+            "[MainWindow] _copy_status %s chars=%d",
+            LOG_SEP,
+            len(self.status_output.toPlainText()),
+        )
         QApplication.clipboard().setText(self.status_output.toPlainText())
         self.summary_label.setText("Status copied")
 
     def _open_last_backup_folder(self) -> None:
+        logger.info(
+            "[MainWindow] _open_last_backup_folder %s path=%s, exists=%s",
+            LOG_SEP,
+            self._last_backup_root,
+            bool(self._last_backup_root and self._last_backup_root.exists()),
+        )
         if self._last_backup_root and self._last_backup_root.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_backup_root)))
         else:
             QMessageBox.information(self, "Open Last Backup", "No completed backup folder is available yet.")
 
     def _read_config(self) -> DbConnectionConfig | None:
+        logger.debug("[MainWindow] _read_config %s start", LOG_SEP)
         try:
             port = int(self.port_input.text())
             config = DbConnectionConfig(
@@ -470,8 +638,18 @@ class MainWindow(QMainWindow):
                 database=self.database_input.text(),
             )
             config.validate()
+            logger.debug(
+                "[MainWindow] _read_config %s success host=%s, port=%d, user=%s, database=%s, password_set=%s",
+                LOG_SEP,
+                config.host.strip(),
+                config.port,
+                config.user.strip(),
+                config.database.strip(),
+                bool(config.password),
+            )
             return config
         except ValueError as exc:
+            logger.warning("[MainWindow] _read_config %s invalid error=%s", LOG_SEP, exc)
             QMessageBox.warning(self, "Invalid Connection", str(exc))
             return None
 
@@ -651,7 +829,11 @@ class MainWindow(QMainWindow):
 
 
 def run_app() -> None:
+    configure_console_logging()
+    logger.info("[App] run_app %s start", LOG_SEP)
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec_())
+    exit_code = app.exec_()
+    logger.info("[App] run_app %s exit code=%d", LOG_SEP, exit_code)
+    sys.exit(exit_code)
