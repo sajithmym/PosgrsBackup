@@ -287,13 +287,17 @@ class BackupService:
 
                     if foreign_key_ddl.strip():
                         self._notify(progress, "Creating foreign keys...")
+                        not_valid_ddl = self._add_not_valid_to_foreign_keys(foreign_key_ddl)
                         logger.info(
                             "[BackupService] restore_database %s executing_foreign_keys bytes=%d",
                             LOG_SEP,
-                            len(foreign_key_ddl.encode("utf-8")),
+                            len(not_valid_ddl.encode("utf-8")),
                         )
                         with conn.cursor() as cur:
-                            cur.execute(foreign_key_ddl)
+                            cur.execute(not_valid_ddl)
+
+                        self._notify(progress, "Validating foreign keys...")
+                        self._validate_foreign_keys(conn, foreign_key_ddl, progress)
 
                     self._notify(progress, "Resetting sequences...")
                     self._sync_sequence_values(conn, tables, progress)
@@ -1351,6 +1355,91 @@ class BackupService:
             len(foreign_key_blocks),
         )
         return schema_ddl, foreign_key_ddl
+
+    def _add_not_valid_to_foreign_keys(self, foreign_key_ddl: str) -> str:
+        """Add NOT VALID to all FOREIGN KEY constraints so they are created
+        without checking existing data.  Validation is done separately."""
+        logger.debug(
+            "[BackupService] _add_not_valid_to_foreign_keys %s start bytes=%d",
+            LOG_SEP,
+            len(foreign_key_ddl.encode("utf-8")),
+        )
+
+        def _inject_not_valid(line: str) -> str:
+            # Match the ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... line
+            # and append NOT VALID before the trailing semicolon.
+            if "FOREIGN KEY" in line.upper() and "NOT VALID" not in line.upper():
+                line = re.sub(r";\s*$", " NOT VALID;", line)
+            return line
+
+        result_lines = [_inject_not_valid(line) for line in foreign_key_ddl.splitlines()]
+        result = "\n".join(result_lines)
+        logger.debug(
+            "[BackupService] _add_not_valid_to_foreign_keys %s success bytes=%d",
+            LOG_SEP,
+            len(result.encode("utf-8")),
+        )
+        return result
+
+    def _validate_foreign_keys(
+        self,
+        conn: "PgConnection",
+        foreign_key_ddl: str,
+        progress: "ProgressCallback | None" = None,
+    ) -> None:
+        """Attempt to VALIDATE each foreign key constraint individually.
+        Constraints that fail validation are logged as warnings but do not
+        abort the restore."""
+        logger.debug(
+            "[BackupService] _validate_foreign_keys %s start",
+            LOG_SEP,
+        )
+        # Extract (table_regclass, constraint_name) pairs from the DDL blocks
+        pattern = re.compile(
+            r'ALTER\s+TABLE\s+ONLY\s+("?[\w.]+"?(?:\."?[\w.]+"?)?)\s+ADD\s+CONSTRAINT\s+("?\w+"?)',
+            re.IGNORECASE,
+        )
+        constraints: list[tuple[str, str]] = []
+        for match in pattern.finditer(foreign_key_ddl):
+            table_name = match.group(1)
+            constraint_name = match.group(2)
+            constraints.append((table_name, constraint_name))
+
+        validated = 0
+        failed = 0
+        for table_name, constraint_name in constraints:
+            validate_sql = f"ALTER TABLE {table_name} VALIDATE CONSTRAINT {constraint_name};"
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SAVEPOINT fk_validate;")
+                    cur.execute(validate_sql)
+                    cur.execute("RELEASE SAVEPOINT fk_validate;")
+                validated += 1
+            except Exception as exc:
+                failed += 1
+                logger.warning(
+                    "[BackupService] _validate_foreign_keys %s constraint_failed table=%s, constraint=%s, error=%s",
+                    LOG_SEP,
+                    table_name,
+                    constraint_name,
+                    str(exc).strip(),
+                )
+                # Roll back only the failed savepoint so the transaction continues
+                with conn.cursor() as cur:
+                    cur.execute("ROLLBACK TO SAVEPOINT fk_validate;")
+                    cur.execute("RELEASE SAVEPOINT fk_validate;")
+
+        if failed:
+            self._notify(
+                progress,
+                f"Warning: {failed} foreign key(s) could not be validated (orphaned references in source data).",
+            )
+        logger.info(
+            "[BackupService] _validate_foreign_keys %s done validated=%d, failed=%d",
+            LOG_SEP,
+            validated,
+            failed,
+        )
 
     def _terminate_create_index_lines(self, ddl_sql: str) -> str:
         fixed_lines = []
