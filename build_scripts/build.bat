@@ -25,7 +25,9 @@ python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python is not installed or not in PATH.
     echo         Please install Python 3.9+ and try again.
-    pause
+    echo.
+    echo Press any key to close...
+    pause >nul
     exit /b 1
 )
 
@@ -44,7 +46,9 @@ echo [INFO] Installing build dependencies...
 pip install --upgrade pyinstaller pyinstaller-hooks-contrib >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Failed to install PyInstaller. Check pip and try again.
-    pause
+    echo.
+    echo Press any key to close...
+    pause >nul
     exit /b 1
 )
 
@@ -83,7 +87,9 @@ pyinstaller %PYINSTALLER_ARGS% "%ENTRY_POINT%"
 if errorlevel 1 (
     echo.
     echo [ERROR] Build failed. Check the output above for details.
-    pause
+    echo.
+    echo Press any key to close...
+    pause >nul
     exit /b 1
 )
 
@@ -122,5 +128,7 @@ echo   Shortcut:   %SHORTCUT_PATH%
 echo ============================================================
 echo.
 
-pause
+echo.
+echo Press any key to close...
+pause >nul
 exit /b 0

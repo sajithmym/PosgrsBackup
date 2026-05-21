@@ -54,6 +54,9 @@ try {
 } catch {
     Write-Host "[ERROR] Python is not installed or not in PATH." -ForegroundColor Red
     Write-Host "        Please install Python 3.9+ and try again." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Press any key to close..." -ForegroundColor Gray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 
@@ -72,6 +75,9 @@ Write-Host "[INFO] Installing build dependencies..." -ForegroundColor Yellow
 pip install --upgrade pyinstaller pyinstaller-hooks-contrib 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Failed to install PyInstaller." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Press any key to close..." -ForegroundColor Gray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 
@@ -125,6 +131,9 @@ $pyinstallerArgs += $EntryPoint
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "[ERROR] Build failed. Check the output above for details." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Press any key to close..." -ForegroundColor Gray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 
@@ -178,3 +187,5 @@ if (-not $NoShortcut) {
 }
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
+Write-Host "Press any key to close..." -ForegroundColor Gray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")

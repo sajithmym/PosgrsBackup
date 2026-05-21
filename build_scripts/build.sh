@@ -54,6 +54,9 @@ if ! command -v python3 &>/dev/null; then
     if ! command -v python &>/dev/null; then
         echo "[ERROR] Python is not installed or not in PATH."
         echo "        Please install Python 3.9+ and try again."
+        echo ""
+        echo "Press any key to close..."
+        read -n 1 -s -r
         exit 1
     fi
     PYTHON=python
@@ -86,6 +89,9 @@ fi
 echo "[INFO] Installing build dependencies..."
 $PIP install --upgrade pyinstaller pyinstaller-hooks-contrib >/dev/null 2>&1 || {
     echo "[ERROR] Failed to install PyInstaller."
+    echo ""
+    echo "Press any key to close..."
+    read -n 1 -s -r
     exit 1
 }
 
@@ -137,6 +143,9 @@ pyinstaller "${PYINSTALLER_ARGS[@]}"
 if [[ $? -ne 0 ]]; then
     echo ""
     echo "[ERROR] Build failed. Check the output above for details."
+    echo ""
+    echo "Press any key to close..."
+    read -n 1 -s -r
     exit 1
 fi
 
@@ -201,3 +210,5 @@ if [[ "$NO_SHORTCUT" == false ]]; then
 fi
 echo "============================================================"
 echo ""
+echo "Press any key to close..."
+read -n 1 -s -r
