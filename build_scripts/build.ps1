@@ -29,17 +29,69 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
 
-# --- Configuration ---
+# ============================================================================
+#  Helper Functions
+# ============================================================================
+
+function Write-Step([string]$Message) {
+    Write-Host "[INFO] $Message" -ForegroundColor Yellow
+}
+
+function Write-Ok([string]$Message) {
+    Write-Host "[SUCCESS] $Message" -ForegroundColor Green
+}
+
+function Write-Err([string]$Message) {
+    Write-Host "[ERROR] $Message" -ForegroundColor Red
+}
+
+function Write-Warn([string]$Message) {
+    Write-Host "[WARNING] $Message" -ForegroundColor Yellow
+}
+
+function Wait-AndExit([int]$Code) {
+    Write-Host ""
+    Write-Host "Press any key to close..." -ForegroundColor Gray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    exit $Code
+}
+
+function Invoke-External([string]$Command, [string[]]$Arguments, [switch]$Silent) {
+    <#
+    .SYNOPSIS
+        Runs an external command safely without PowerShell treating stderr as errors.
+    #>
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if ($Silent) {
+            & $Command @Arguments 2>&1 | Out-Null
+        } else {
+            & $Command @Arguments
+        }
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevPref
+    }
+}
+
+# ============================================================================
+#  Configuration
+# ============================================================================
+
 $ProjectRoot = (Resolve-Path "$PSScriptRoot\..").Path
-$AppName = "PostgreSQL Backup and Restore"
-$ExeName = "PgBackupRestore"
-$IconPath = Join-Path $PSScriptRoot "app_icon.ico"
-$EntryPoint = Join-Path $ProjectRoot "main.py"
-$DistDir = Join-Path $ProjectRoot "dist"
-$BuildDir = Join-Path $ProjectRoot "build"
-$SrcDir = Join-Path $ProjectRoot "src"
+$AppName     = "PostgreSQL Backup and Restore"
+$ExeName     = "PgBackupRestore"
+$IconPath    = Join-Path $PSScriptRoot "app_icon.ico"
+$EntryPoint  = Join-Path $ProjectRoot "main.py"
+$DistDir     = Join-Path $ProjectRoot "dist"
+$BuildDir    = Join-Path $ProjectRoot "build"
+$SrcDir      = Join-Path $ProjectRoot "src"
+
+# ============================================================================
+#  Build Pipeline
+# ============================================================================
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
@@ -47,57 +99,60 @@ Write-Host "  Building: $AppName" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# --- Check Python ---
-try {
-    $pythonVersion = python --version 2>&1
-    Write-Host "[INFO] Python found: $pythonVersion" -ForegroundColor Green
-} catch {
-    Write-Host "[ERROR] Python is not installed or not in PATH." -ForegroundColor Red
-    Write-Host "        Please install Python 3.9+ and try again." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Press any key to close..." -ForegroundColor Gray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    exit 1
+# --- 1. Check Python ---
+Write-Step "Checking Python installation..."
+$exitCode = Invoke-External "python" @("--version") -Silent
+if ($exitCode -ne 0) {
+    Write-Err "Python is not installed or not in PATH."
+    Write-Err "Please install Python 3.9+ and try again."
+    Wait-AndExit 1
 }
+$pythonVersion = & python --version 2>&1
+Write-Ok "Python found: $pythonVersion"
 
-# --- Generate icon if missing ---
+# --- 2. Generate icon if missing ---
 if (-not (Test-Path $IconPath)) {
-    Write-Host "[INFO] Generating application icon..." -ForegroundColor Yellow
-    python (Join-Path $PSScriptRoot "generate_icon.py")
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[WARNING] Icon generation failed. Building without custom icon." -ForegroundColor Yellow
+    Write-Step "Generating application icon..."
+    $exitCode = Invoke-External "python" @((Join-Path $PSScriptRoot "generate_icon.py"))
+    if ($exitCode -ne 0) {
+        Write-Warn "Icon generation failed. Building without custom icon."
         $IconPath = $null
     }
 }
 
-# --- Install build dependencies ---
-Write-Host "[INFO] Installing build dependencies..." -ForegroundColor Yellow
-pip install --upgrade pyinstaller pyinstaller-hooks-contrib 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Failed to install PyInstaller." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Press any key to close..." -ForegroundColor Gray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    exit 1
+# --- 3. Install build dependencies ---
+Write-Step "Installing build dependencies (PyInstaller)..."
+$exitCode = Invoke-External "pip" @("install", "--upgrade", "--quiet", "pyinstaller", "pyinstaller-hooks-contrib") -Silent
+if ($exitCode -ne 0) {
+    Write-Err "Failed to install PyInstaller. Check your pip configuration."
+    Wait-AndExit 1
 }
+Write-Ok "Build dependencies ready."
 
-# --- Install project dependencies ---
-Write-Host "[INFO] Installing project dependencies..." -ForegroundColor Yellow
-pip install -r (Join-Path $ProjectRoot "requirements.txt") 2>&1 | Out-Null
+# --- 4. Install project dependencies ---
+Write-Step "Installing project dependencies..."
+$requirementsFile = Join-Path $ProjectRoot "requirements.txt"
+$exitCode = Invoke-External "pip" @("install", "--quiet", "-r", $requirementsFile) -Silent
+if ($exitCode -ne 0) {
+    Write-Warn "Some project dependencies may have failed to install."
+}
+Write-Ok "Project dependencies ready."
 
-# --- Clean previous build ---
+# --- 5. Clean previous build ---
 if ($Clean -or (Test-Path (Join-Path $DistDir $ExeName))) {
-    Write-Host "[INFO] Cleaning previous build artifacts..." -ForegroundColor Yellow
-    if (Test-Path (Join-Path $DistDir $ExeName)) {
-        Remove-Item -Recurse -Force (Join-Path $DistDir $ExeName)
+    Write-Step "Cleaning previous build artifacts..."
+    $targetDist = Join-Path $DistDir $ExeName
+    if (Test-Path $targetDist) {
+        Remove-Item -Recurse -Force $targetDist
     }
     if ($Clean -and (Test-Path $BuildDir)) {
         Remove-Item -Recurse -Force $BuildDir
     }
+    Write-Ok "Clean complete."
 }
 
-# --- Build with PyInstaller ---
-Write-Host "[INFO] Building executable with PyInstaller..." -ForegroundColor Yellow
+# --- 6. Build with PyInstaller ---
+Write-Step "Building executable with PyInstaller..."
 Write-Host ""
 
 $pyinstallerArgs = @(
@@ -126,31 +181,32 @@ if ($IconPath -and (Test-Path $IconPath)) {
 
 $pyinstallerArgs += $EntryPoint
 
-& pyinstaller @pyinstallerArgs
-
-if ($LASTEXITCODE -ne 0) {
+$exitCode = Invoke-External "pyinstaller" $pyinstallerArgs
+if ($exitCode -ne 0) {
     Write-Host ""
-    Write-Host "[ERROR] Build failed. Check the output above for details." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Press any key to close..." -ForegroundColor Gray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    exit 1
+    Write-Err "Build failed. Check the PyInstaller output above for details."
+    Wait-AndExit 1
 }
 
-# --- Determine exe path ---
+# --- 7. Determine output path ---
 if ($OneFile) {
     $ExePath = Join-Path $DistDir "$ExeName.exe"
 } else {
     $ExePath = Join-Path $DistDir "$ExeName\$ExeName.exe"
 }
 
+if (-not (Test-Path $ExePath)) {
+    Write-Err "Build appeared to succeed but executable not found at: $ExePath"
+    Wait-AndExit 1
+}
+
 Write-Host ""
-Write-Host "[SUCCESS] Build completed: $ExePath" -ForegroundColor Green
+Write-Ok "Build completed: $ExePath"
 Write-Host ""
 
-# --- Create Desktop Shortcut ---
+# --- 8. Create Desktop Shortcut ---
 if (-not $NoShortcut) {
-    Write-Host "[INFO] Creating desktop shortcut..." -ForegroundColor Yellow
+    Write-Step "Creating desktop shortcut..."
 
     $Desktop = [Environment]::GetFolderPath("Desktop")
     $ShortcutPath = Join-Path $Desktop "$AppName.lnk"
@@ -171,12 +227,16 @@ if (-not $NoShortcut) {
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Shortcut) | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($WshShell) | Out-Null
 
-        Write-Host "[SUCCESS] Desktop shortcut created: $ShortcutPath" -ForegroundColor Green
+        Write-Ok "Desktop shortcut created: $ShortcutPath"
     } catch {
-        Write-Host "[WARNING] Could not create desktop shortcut: $_" -ForegroundColor Yellow
-        Write-Host "          You can manually create a shortcut to: $ExePath" -ForegroundColor Yellow
+        Write-Warn "Could not create desktop shortcut: $_"
+        Write-Warn "You can manually create a shortcut to: $ExePath"
     }
 }
+
+# ============================================================================
+#  Done
+# ============================================================================
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
@@ -186,6 +246,5 @@ if (-not $NoShortcut) {
     Write-Host "  Shortcut:   $ShortcutPath" -ForegroundColor Cyan
 }
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Press any key to close..." -ForegroundColor Gray
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
+Wait-AndExit 0
